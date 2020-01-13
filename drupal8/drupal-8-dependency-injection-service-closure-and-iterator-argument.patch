@@ -1,0 +1,111 @@
+diff --git a/core/lib/Drupal/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumper.php b/core/lib/Drupal/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumper.php
+index 977fc2c8e9..cdf6f6165a 100644
+--- a/core/lib/Drupal/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumper.php
++++ b/core/lib/Drupal/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumper.php
+@@ -3,6 +3,8 @@
+ namespace Drupal\Component\DependencyInjection\Dumper;
+ 
+ use Drupal\Component\Utility\Crypt;
++use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
++use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+ use Symfony\Component\DependencyInjection\ContainerInterface;
+ use Symfony\Component\DependencyInjection\Definition;
+ use Symfony\Component\DependencyInjection\Parameter;
+@@ -299,6 +301,9 @@ protected function dumpCollection($collection, &$resolve = FALSE) {
+     $code = [];
+ 
+     foreach ($collection as $key => $value) {
++      if ($value instanceof IteratorArgument) {
++        $value = $value->getValues();
++      }
+       if (is_array($value)) {
+         $resolve_collection = FALSE;
+         $code[$key] = $this->dumpCollection($value, $resolve_collection);
+@@ -422,6 +427,12 @@ protected function dumpValue($value) {
+     elseif ($value instanceof Expression) {
+       throw new RuntimeException('Unable to use expressions as the Symfony ExpressionLanguage component is not installed.');
+     }
++    elseif ($value instanceof ServiceClosureArgument) {
++      $values = $value->getValues();
++      /** @var Reference $item */
++      $item = reset($values);
++      return $this->getReferenceCall((string) $item, $item);
++    }
+     elseif (is_object($value)) {
+       // Drupal specific: Instantiated objects have a _serviceId parameter.
+       if (isset($value->_serviceId)) {
+diff --git a/core/lib/Drupal/Component/DependencyInjection/Dumper/PhpArrayDumper.php b/core/lib/Drupal/Component/DependencyInjection/Dumper/PhpArrayDumper.php
+index a6fa2b9b09..08451b1139 100644
+--- a/core/lib/Drupal/Component/DependencyInjection/Dumper/PhpArrayDumper.php
++++ b/core/lib/Drupal/Component/DependencyInjection/Dumper/PhpArrayDumper.php
+@@ -2,6 +2,7 @@
+ 
+ namespace Drupal\Component\DependencyInjection\Dumper;
+ 
++use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+ use Symfony\Component\DependencyInjection\ContainerInterface;
+ 
+ /**
+@@ -33,6 +34,9 @@ protected function dumpCollection($collection, &$resolve = FALSE) {
+     $code = [];
+ 
+     foreach ($collection as $key => $value) {
++      if ($value instanceof IteratorArgument) {
++        $value = $value->getValues();
++      }
+       if (is_array($value)) {
+         $code[$key] = $this->dumpCollection($value);
+       }
+diff --git a/core/tests/Drupal/Tests/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumperTest.php b/core/tests/Drupal/Tests/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumperTest.php
+index e1560787ac..a883df7811 100644
+--- a/core/tests/Drupal/Tests/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumperTest.php
++++ b/core/tests/Drupal/Tests/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumperTest.php
+@@ -9,6 +9,8 @@
+ 
+   use Drupal\Component\Utility\Crypt;
+   use PHPUnit\Framework\TestCase;
++  use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
++  use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+   use Symfony\Component\DependencyInjection\Definition;
+   use Symfony\Component\DependencyInjection\Reference;
+   use Symfony\Component\DependencyInjection\Parameter;
+@@ -194,6 +196,11 @@ public function getParametersDataProvider() {
+           ['reference' => $this->getServiceCall('referenced_service')],
+           TRUE,
+         ],
++        [
++            ['reference' => new ServiceClosureArgument(new Reference('referenced_service'))],
++            ['reference' => $this->getServiceClosureCall('referenced_service')],
++            TRUE,
++        ],
+       ];
+     }
+ 
+@@ -336,6 +343,13 @@ public function getDefinitionsDataProvider() {
+         'arguments_expected' => $this->getCollection([$this->getCollection([$this->getServiceCall('bar')])]),
+       ] + $base_service_definition;
+ 
++      // Test an IteratorArgument collection with a reference to resolve.
++      $service_definitions[] = [
++          'arguments' => [new IteratorArgument([new Reference('bar')])],
++          'arguments_count' => 1,
++          'arguments_expected' => $this->getCollection([$this->getCollection([$this->getServiceCall('bar')])]),
++        ] + $base_service_definition;
++
+       // Test a collection with a variable to resolve.
+       $service_definitions[] = [
+         'arguments' => [new Parameter('llama_parameter')],
+@@ -473,6 +487,13 @@ protected function getServiceCall($id, $invalid_behavior = ContainerInterface::E
+       ];
+     }
+ 
++    /**
++     * Helper function to return a service closure definition.
++     */
++    protected function getServiceClosureCall($id, $invalid_behavior = ContainerInterface::EXCEPTION_ON_INVALID_REFERENCE) {
++      return new ServiceClosureArgument(new Reference('referenced_service'));
++    }
++
+     /**
+      * Tests that references to aliases work correctly.
+      *
